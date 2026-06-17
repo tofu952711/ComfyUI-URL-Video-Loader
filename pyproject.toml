@@ -1,0 +1,15 @@
+[project]
+name = "kkvideo"
+description = "Nodes related to video workflows"
+version = "1.7.9"
+license = { file = "LICENSE" }
+dependencies = ["opencv-python", "imageio-ffmpeg"]
+
+[project.urls]
+Repository = ""
+
+#  Used by Comfy Registry https://comfyregistry.org
+[tool.comfy]
+PublisherId = "local"
+DisplayName = "KKvideo"
+Icon = ""
