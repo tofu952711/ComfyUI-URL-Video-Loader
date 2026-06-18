@@ -141,6 +141,102 @@ def download_direct_video(url, download_dir):
             shutil.copyfileobj(response, out)
     return file
 
+def even_dimension(value):
+    return max(2, int(value) // 2 * 2)
+
+def get_video_stream_info(file):
+    try:
+        import av
+        with av.open(file) as container:
+            stream = next((s for s in container.streams if s.type == "video"), None)
+            if stream is None:
+                return None
+            width = stream.codec_context.width or stream.width
+            height = stream.codec_context.height or stream.height
+            fps = 0
+            for rate in (stream.average_rate, stream.base_rate, stream.guessed_rate):
+                if rate:
+                    fps = float(rate)
+                    break
+            return {"width": int(width), "height": int(height), "fps": fps}
+    except Exception:
+        pass
+
+    if ffmpeg_path is None:
+        return None
+    res = subprocess.run([ffmpeg_path, "-hide_banner", "-i", file],
+                         capture_output=True)
+    probe_text = res.stderr.decode(*ENCODE_ARGS)
+    size_match = re.search(r"Video:.*? (\d{2,5})x(\d{2,5})", probe_text)
+    if not size_match:
+        return None
+    fps_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*fps", probe_text)
+    return {
+        "width": int(size_match.group(1)),
+        "height": int(size_match.group(2)),
+        "fps": float(fps_match.group(1)) if fps_match else 0,
+    }
+
+def get_limited_video_path(file):
+    directory, filename = os.path.split(file)
+    stem, _ = os.path.splitext(filename)
+    return os.path.join(directory, stem + "_kkvideo_limited.mp4")
+
+def limit_downloaded_video(file, max_long_side=1920, max_fps=30):
+    info = get_video_stream_info(file)
+    if not info:
+        logger.warn(f"KKvideo could not inspect downloaded video, using original file: {file}")
+        return file
+
+    width = info["width"]
+    height = info["height"]
+    fps = info["fps"]
+    filters = []
+
+    if max(width, height) > max_long_side:
+        scale = max_long_side / max(width, height)
+        target_width = even_dimension(width * scale)
+        target_height = even_dimension(height * scale)
+        filters.append(f"scale={target_width}:{target_height}")
+
+    if fps and fps > max_fps:
+        filters.append(f"fps={max_fps}")
+
+    if not filters:
+        return file
+    if ffmpeg_path is None:
+        raise Exception("KKvideo needs ffmpeg to limit URL video resolution or fps, but ffmpeg was not found.")
+
+    output_file = get_limited_video_path(file)
+    if os.path.exists(output_file):
+        return output_file
+
+    args = [
+        ffmpeg_path, "-y", "-v", "error",
+        "-i", file,
+        "-vf", ",".join(filters),
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        output_file,
+    ]
+    try:
+        subprocess.run(args, capture_output=True, check=True)
+    except subprocess.CalledProcessError as e:
+        raise Exception("An error occurred while limiting the downloaded video:\n"
+                        + e.stderr.decode(*ENCODE_ARGS))
+
+    logger.info(
+        "KKvideo limited URL video: "
+        f"{width}x{height}@{fps:.3g}fps -> {output_file}"
+    )
+    return output_file
+
 def try_download_video(url, download_dir=None):
     if url in download_history:
         return download_history[url]
@@ -167,6 +263,7 @@ def try_download_video(url, download_dir=None):
             file = download_direct_video(url, download_dir)
         except Exception as e:
             raise Exception("An error occurred while downloading the video URL:\n" + str(e))
+    file = limit_downloaded_video(file)
     download_history[url] = file
     return file
 
